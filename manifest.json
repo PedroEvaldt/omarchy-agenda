@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "id": "pedro.agenda",
+  "name": "Agenda",
+  "version": "0.1.0",
+  "author": "Pedro Evaldt",
+  "license": "MIT",
+  "description": "Tarefas e agenda num painel quadrado da barra do Omarchy",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Agenda",
+    "description": "Tarefas com subpassos e agenda da semana, num painel de duas abas",
+    "category": "Productivity",
+    "allowMultiple": false,
+    "defaultSection": "centerEnd",
+    "defaults": {
+      "defaultTab": "tasks",
+      "agendaDays": 7,
+      "showCompleted": false,
+      "cliPath": ""
+    },
+    "schema": [
+      {
+        "key": "defaultTab",
+        "type": "enum",
+        "label": "Aba inicial",
+        "options": ["tasks", "agenda"],
+        "defaultValue": "tasks"
+      },
+      {
+        "key": "agendaDays",
+        "type": "integer",
+        "label": "Dias na agenda",
+        "min": 1,
+        "max": 30,
+        "step": 1,
+        "defaultValue": 7
+      },
+      {
+        "key": "showCompleted",
+        "type": "boolean",
+        "label": "Mostrar concluídas ao abrir",
+        "defaultValue": false
+      },
+      {
+        "key": "cliPath",
+        "type": "path",
+        "label": "Caminho da CLI agenda",
+        "defaultValue": "",
+        "description": "Vazio usa ~/.config/omarchy/plugins/pedro.agenda/bin/agenda."
+      }
+    ]
+  }
+}

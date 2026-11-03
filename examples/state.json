@@ -1,0 +1,171 @@
+{
+  "version": 1,
+  "generatedAt": "2026-11-03T13:53:18+00:00",
+  "sync": {
+    "lastOkAt": "",
+    "status": "none",
+    "error": ""
+  },
+  "tasks": [
+    {
+      "id": "sw4y",
+      "title": "Pagar conta de luz",
+      "due": "2026-11-02",
+      "dueTime": "",
+      "priority": 0,
+      "createdAt": "2026-11-03T13:53:18+00:00",
+      "completedAt": "",
+      "subtasks": []
+    },
+    {
+      "id": "mig6",
+      "title": "Levar exames pro dentista",
+      "due": "2026-11-03",
+      "dueTime": "15:00",
+      "priority": 0,
+      "createdAt": "2026-11-03T13:53:18+00:00",
+      "completedAt": "",
+      "subtasks": []
+    },
+    {
+      "id": "fft5",
+      "title": "Montar apresentação",
+      "due": "2026-11-03",
+      "dueTime": "",
+      "priority": 1,
+      "createdAt": "2026-11-03T13:53:18+00:00",
+      "completedAt": "",
+      "subtasks": [
+        {
+          "id": "fft5.1",
+          "title": "Rascunho",
+          "done": true
+        },
+        {
+          "id": "fft5.2",
+          "title": "Slides",
+          "done": true
+        },
+        {
+          "id": "fft5.3",
+          "title": "Revisar texto",
+          "done": false
+        },
+        {
+          "id": "fft5.4",
+          "title": "Ensaiar",
+          "done": false
+        }
+      ]
+    },
+    {
+      "id": "a2q3",
+      "title": "Presente pra Ana",
+      "due": "2026-11-06",
+      "dueTime": "",
+      "priority": 0,
+      "createdAt": "2026-11-03T13:53:18+00:00",
+      "completedAt": "",
+      "subtasks": [
+        {
+          "id": "a2q3.1",
+          "title": "Escolher",
+          "done": false
+        },
+        {
+          "id": "a2q3.2",
+          "title": "Comprar",
+          "done": false
+        },
+        {
+          "id": "a2q3.3",
+          "title": "Embrulhar",
+          "done": false
+        }
+      ]
+    },
+    {
+      "id": "cw2s",
+      "title": "Ler sobre Quickshell",
+      "due": "",
+      "dueTime": "",
+      "priority": 0,
+      "createdAt": "2026-11-03T13:53:18+00:00",
+      "completedAt": "",
+      "subtasks": []
+    },
+    {
+      "id": "ju70",
+      "title": "Configurar o Omarchy",
+      "due": "2026-11-02",
+      "dueTime": "",
+      "priority": 0,
+      "createdAt": "2026-11-03T13:53:18+00:00",
+      "completedAt": "2026-11-03T10:53:18+00:00",
+      "subtasks": []
+    }
+  ],
+  "events": [
+    {
+      "id": "l:ev01",
+      "calendar": "local",
+      "color": "",
+      "title": "Aniversário da Ana",
+      "allDay": true,
+      "start": "2026-11-03",
+      "end": "2026-11-04",
+      "location": "",
+      "url": "",
+      "description": ""
+    },
+    {
+      "id": "l:ev02",
+      "calendar": "local",
+      "color": "",
+      "title": "Daily",
+      "allDay": false,
+      "start": "2026-11-03T09:00:00+00:00",
+      "end": "2026-11-03T09:30:00+00:00",
+      "location": "",
+      "url": "",
+      "description": ""
+    },
+    {
+      "id": "l:ev03",
+      "calendar": "local",
+      "color": "",
+      "title": "Dentista",
+      "allDay": false,
+      "start": "2026-11-03T15:00:00+00:00",
+      "end": "2026-11-03T16:00:00+00:00",
+      "location": "Centro",
+      "url": "",
+      "description": ""
+    },
+    {
+      "id": "l:ev04",
+      "calendar": "local",
+      "color": "",
+      "title": "Call com cliente",
+      "allDay": false,
+      "start": "2026-11-04T14:00:00+00:00",
+      "end": "2026-11-04T15:00:00+00:00",
+      "location": "",
+      "url": "https://meet.google.com/",
+      "description": ""
+    },
+    {
+      "id": "l:ev05",
+      "calendar": "local",
+      "color": "",
+      "title": "Jantar",
+      "allDay": false,
+      "start": "2026-11-06T19:30:00+00:00",
+      "end": "2026-11-06T22:00:00+00:00",
+      "location": "",
+      "url": "",
+      "description": ""
+    }
+  ],
+  "trash": []
+}
