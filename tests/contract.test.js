@@ -20,6 +20,16 @@ test("manifest declara um bar-widget válido", () => {
   assert.deepEqual(manifest.kinds, ["bar-widget"])
   assert.equal(fs.existsSync(path.join(root, manifest.entryPoints.barWidget)), true)
   for (const entry of manifest.barWidget.schema) assert.ok(entry.key in manifest.barWidget.defaults, entry.key)
+  // O validador do Omarchy 4.0.x só aceita estas três seções.
+  assert.ok(["left", "center", "right"].includes(manifest.barWidget.defaultSection))
+})
+
+test("QML só usa o que existe no shell do Omarchy 4.0.6", () => {
+  const forbidden = ["labelText:", "Style.easeOut", "pressFeedbackButtons", "ShellIpc", "Style.duration(200)\n"]
+  for (const name of ["BarWidget.qml", "Panel.qml", "TasksView.qml", "AgendaView.qml"]) {
+    const source = read(name)
+    for (const fragment of forbidden) assert.equal(source.includes(fragment), false, `${name} usa ${fragment.trim()}`)
+  }
 })
 
 test("BarWidget carrega o painel e expõe open/close/opened", () => {

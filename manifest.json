@@ -17,7 +17,7 @@
     "description": "Tarefas com subpassos e agenda da semana, num painel de duas abas",
     "category": "Productivity",
     "allowMultiple": false,
-    "defaultSection": "centerEnd",
+    "defaultSection": "center",
     "defaults": {
       "defaultTab": "tasks",
       "agendaDays": 7,

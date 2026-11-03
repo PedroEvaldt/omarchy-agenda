@@ -434,11 +434,12 @@ Panel {
           height: body.height
           x: -root.tab * body.width
 
+          // Style.duration só existe nas versões mais novas do shell (respeita o
+          // "animações desligadas" do Omarchy); na 4.0.x cai no valor fixo.
           Behavior on x {
             NumberAnimation {
-              duration: Style.duration(200)
-              easing.type: Easing.Bezier
-              easing.bezierCurve: Style.easeOut
+              duration: typeof Style.duration === "function" ? Style.duration(200) : 200
+              easing.type: Easing.OutCubic
             }
           }
 
