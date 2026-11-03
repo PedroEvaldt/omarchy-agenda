@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """agenda — a CLI do plugin Agenda para o Omarchy.
 
-Fase 1: as tarefas e os eventos ficam num único arquivo JSON local, o
-state.json. O painel QML lê esse arquivo e observa mudanças nele; toda
-escrita, venha do painel, do terminal ou (no futuro) do WhatsApp, passa por
-aqui. Assim existe uma única porta de entrada para os dados.
+Única porta de entrada para os dados: o painel QML, o terminal, o daemon e
+(no futuro) o WhatsApp passam por aqui. As tarefas vivem no state.json local;
+os eventos vêm do Google Calendar quando ele está configurado, ou ficam
+locais quando não está.
 
 Só biblioteca padrão do Python: nada para instalar.
 
@@ -15,6 +15,9 @@ Uso rápido:
     agenda sub done 7k2a.1
     agenda list
     agenda event add "dentista qui 15h-16h30"
+    agenda google setup ~/Downloads/client_secret_xxx.json
+    agenda sync
+    agenda service install
     agenda seed          # grava dados de exemplo
     agenda parse "texto" # mostra como o texto seria interpretado
 """
@@ -26,102 +29,29 @@ import json
 import os
 import re
 import secrets
-import shutil
-import subprocess
 import sys
-import tempfile
 import unicodedata
 from datetime import date, datetime, timedelta
 
+# Os módulos de apoio moram em ../lib, ao lado deste executável.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+
+import agenda_daemon as daemon  # noqa: E402
+import agenda_google as google  # noqa: E402
+import agenda_store as store  # noqa: E402
+
 ID_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz"
 ID_LENGTH = 4
-# Concluídas somem do arquivo depois deste prazo; a lixeira também.
-RETENTION_DAYS = 7
 DEFAULT_EVENT_MINUTES = 60
-
-# ---------------------------------------------------------------------------
-# Arquivo de estado
-# ---------------------------------------------------------------------------
-
-
-def state_path() -> str:
-    """Caminho do state.json. AGENDA_STATE permite trocar nos testes."""
-    override = os.environ.get("AGENDA_STATE")
-    if override:
-        return override
-    base = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
-    return os.path.join(base, "agenda", "state.json")
-
-
-def now_local() -> datetime:
-    return datetime.now().astimezone()
-
-
-def iso(dt: datetime) -> str:
-    return dt.isoformat(timespec="seconds")
-
-
-def empty_state() -> dict:
-    return {
-        "version": 1,
-        "generatedAt": "",
-        "sync": {"lastOkAt": "", "status": "none", "error": ""},
-        "tasks": [],
-        "events": [],
-        "trash": [],
-    }
-
-
-def load_state(path: str) -> dict:
-    try:
-        with open(path, encoding="utf-8") as handle:
-            data = json.load(handle)
-    except FileNotFoundError:
-        return empty_state()
-    except (OSError, json.JSONDecodeError) as error:
-        fail(f"não consegui ler {path}: {error}")
-    state = empty_state()
-    if isinstance(data, dict):
-        for key in ("tasks", "events", "trash"):
-            if isinstance(data.get(key), list):
-                state[key] = data[key]
-        if isinstance(data.get("sync"), dict):
-            state["sync"].update(data["sync"])
-    return state
-
-
-def prune(state: dict, now: datetime) -> None:
-    """Esquece concluídas e excluídas velhas para o arquivo não crescer para sempre."""
-    cutoff = iso(now - timedelta(days=RETENTION_DAYS))
-    state["tasks"] = [t for t in state["tasks"] if not t.get("completedAt") or t["completedAt"] >= cutoff]
-    state["trash"] = [t for t in state["trash"] if t.get("deletedAt", "") >= cutoff]
-
-
-def save_state(path: str, state: dict) -> None:
-    """Escrita atômica: grava num temporário e troca de lugar com o arquivo real.
-
-    O painel observa o arquivo; sem isso ele poderia ler um JSON pela metade.
-    """
-    now = now_local()
-    prune(state, now)
-    state["generatedAt"] = iso(now)
-    directory = os.path.dirname(path) or "."
-    os.makedirs(directory, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=".state-", suffix=".json", dir=directory)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(state, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-        os.replace(tmp, path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
 
 
 def fail(message: str) -> None:
     print(f"agenda: {message}", file=sys.stderr)
     sys.exit(1)
+
+
+def self_path() -> str:
+    return os.path.realpath(__file__)
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +70,7 @@ def existing_ids(state: dict) -> set[str]:
 
 
 def new_id(state: dict) -> str:
-    """Quatro caracteres base36: curto o bastante para digitar numa mensagem."""
+    """Quatro caracteres base36 começando por letra: curto para digitar numa mensagem."""
     taken = existing_ids(state)
     while True:
         candidate = "".join(secrets.choice(ID_ALPHABET) for _ in range(ID_LENGTH))
@@ -327,31 +257,7 @@ def parse_due_option(value: str, today: date) -> date | None:
     try:
         return date.fromisoformat(value)
     except ValueError:
-        parsed = parse_text(value, today)
-        return parsed["due"]
-
-
-# ---------------------------------------------------------------------------
-# Notificações do Omarchy (opcionais)
-# ---------------------------------------------------------------------------
-
-
-def notify(title: str, body: str = "", action: tuple[str, list[str]] | None = None) -> None:
-    """Usa o omarchy-notification-send quando ele existe; fora do Omarchy, silêncio."""
-    if os.environ.get("AGENDA_NO_NOTIFY") or not shutil.which("omarchy-notification-send"):
-        return
-    command = ["omarchy-notification-send", "-g", "󰄲", title, body]
-    if action:
-        label, program = action
-        command += ["--action", label, *program]
-    try:
-        subprocess.run(command, check=False, timeout=5, capture_output=True)
-    except (OSError, subprocess.SubprocessError):
-        pass
-
-
-def self_path() -> str:
-    return os.path.realpath(__file__)
+        return parse_text(value, today)["due"]
 
 
 # ---------------------------------------------------------------------------
@@ -366,7 +272,7 @@ def make_task(state: dict, title: str, due: date | None, due_time: str | None, p
         "due": due.isoformat() if due else "",
         "dueTime": due_time or "",
         "priority": priority,
-        "createdAt": iso(now_local()),
+        "createdAt": store.iso(store.now_local()),
         "completedAt": "",
         "subtasks": [],
     }
@@ -387,8 +293,6 @@ def describe_task(task: dict) -> str:
 
 
 def cmd_add(args) -> None:
-    path = state_path()
-    state = load_state(path)
     parsed = parse_text(" ".join(args.text))
     if parsed["title"] == "":
         fail("a tarefa precisa de um título")
@@ -398,120 +302,107 @@ def cmd_add(args) -> None:
         if due is None:
             fail(f"não entendi o prazo '{args.due}'")
     priority = 1 if args.priority else parsed["priority"]
-    task = make_task(state, parsed["title"], due, parsed["time"], priority, args.sub or [])
-    state["tasks"].append(task)
-    save_state(path, state)
+    with store.locked_state() as state:
+        task = make_task(state, parsed["title"], due, parsed["time"], priority, args.sub or [])
+        state["tasks"].append(task)
     print(describe_task(task))
 
 
 def cmd_done(args) -> None:
-    path = state_path()
-    state = load_state(path)
-    task = find_task(state, args.id)
-    task["completedAt"] = iso(now_local())
-    for sub in task.get("subtasks", []):
-        sub["done"] = True
-    save_state(path, state)
+    with store.locked_state() as state:
+        task = find_task(state, args.id)
+        task["completedAt"] = store.iso(store.now_local())
+        for sub in task.get("subtasks", []):
+            sub["done"] = True
     print(f"concluída: {task['title']}")
 
 
 def cmd_undo(args) -> None:
-    path = state_path()
-    state = load_state(path)
-    task = find_task(state, args.id)
-    task["completedAt"] = ""
-    save_state(path, state)
+    with store.locked_state() as state:
+        task = find_task(state, args.id)
+        task["completedAt"] = ""
     print(f"reaberta: {task['title']}")
 
 
 def cmd_rm(args) -> None:
-    path = state_path()
-    state = load_state(path)
-    task = find_task(state, args.id)
-    state["tasks"] = [t for t in state["tasks"] if t is not task]
-    task["deletedAt"] = iso(now_local())
-    state["trash"].append(task)
-    save_state(path, state)
+    with store.locked_state() as state:
+        task = find_task(state, args.id)
+        state["tasks"] = [t for t in state["tasks"] if t is not task]
+        task["deletedAt"] = store.iso(store.now_local())
+        state["trash"].append(task)
     print(f"excluída: {task['title']} (desfazer: agenda restore {task['id']})")
-    notify("Tarefa excluída", task["title"], ("Desfazer", [self_path(), "restore", task["id"]]))
+    store.notify("Tarefa excluída", task["title"], action=("Desfazer", [self_path(), "restore", task["id"]]))
 
 
 def cmd_restore(args) -> None:
-    path = state_path()
-    state = load_state(path)
-    for task in state["trash"]:
-        if task.get("id") == args.id:
-            state["trash"].remove(task)
-            task.pop("deletedAt", None)
-            state["tasks"].append(task)
-            save_state(path, state)
-            print(f"restaurada: {task['title']}")
-            notify("Tarefa restaurada", task["title"])
-            return
-    fail(f"'{args.id}' não está na lixeira")
+    with store.locked_state() as state:
+        for task in state["trash"]:
+            if task.get("id") == args.id:
+                state["trash"].remove(task)
+                task.pop("deletedAt", None)
+                state["tasks"].append(task)
+                break
+        else:
+            fail(f"'{args.id}' não está na lixeira")
+    print(f"restaurada: {task['title']}")
+    store.notify("Tarefa restaurada", task["title"])
 
 
 def cmd_snooze(args) -> None:
-    path = state_path()
-    state = load_state(path)
-    task = find_task(state, args.id)
-    base = date.fromisoformat(task["due"]) if task.get("due") else date.today()
-    if base < date.today():
-        base = date.today()
-    task["due"] = (base + timedelta(days=args.days)).isoformat()
-    save_state(path, state)
+    with store.locked_state() as state:
+        task = find_task(state, args.id)
+        base = date.fromisoformat(task["due"]) if task.get("due") else date.today()
+        if base < date.today():
+            base = date.today()
+        task["due"] = (base + timedelta(days=args.days)).isoformat()
     print(f"adiada para {task['due']}: {task['title']}")
 
 
 def cmd_edit(args) -> None:
-    path = state_path()
-    state = load_state(path)
-    task = find_task(state, args.id)
-    if args.title:
-        task["title"] = args.title.strip()
-    if args.no_due:
-        task["due"], task["dueTime"] = "", ""
-    elif args.due:
-        parsed = parse_text(args.due, date.today())
-        due = parsed["due"]
-        if due is None:
-            try:
-                due = date.fromisoformat(args.due)
-            except ValueError:
-                fail(f"não entendi o prazo '{args.due}'")
-        task["due"] = due.isoformat()
-        if parsed["time"]:
-            task["dueTime"] = parsed["time"]
-    if args.priority is not None:
-        task["priority"] = 1 if args.priority else 0
-    save_state(path, state)
+    with store.locked_state() as state:
+        task = find_task(state, args.id)
+        if args.title:
+            task["title"] = args.title.strip()
+        if args.no_due:
+            task["due"], task["dueTime"] = "", ""
+        elif args.due:
+            parsed = parse_text(args.due, date.today())
+            due = parsed["due"]
+            if due is None:
+                try:
+                    due = date.fromisoformat(args.due)
+                except ValueError:
+                    fail(f"não entendi o prazo '{args.due}'")
+            task["due"] = due.isoformat()
+            if parsed["time"]:
+                task["dueTime"] = parsed["time"]
+        if args.priority is not None:
+            task["priority"] = 1 if args.priority else 0
     print(describe_task(task))
 
 
 def cmd_sub(args) -> None:
-    path = state_path()
-    state = load_state(path)
-    if args.sub_command == "add":
-        task = find_task(state, args.id)
-        title = " ".join(args.text).strip()
-        if not title:
-            fail("o subpasso precisa de um título")
-        sub = {"id": next_sub_id(task), "title": title, "done": False}
-        task.setdefault("subtasks", []).append(sub)
-        save_state(path, state)
-        print(f"{sub['id']}  {sub['title']}")
-        return
-    task, sub = find_sub(state, args.id)
-    if args.sub_command == "done":
-        sub["done"] = True
-        print(f"feito: {sub['title']}")
-    elif args.sub_command == "undo":
-        sub["done"] = False
-        print(f"reaberto: {sub['title']}")
-    elif args.sub_command == "rm":
-        task["subtasks"] = [s for s in task["subtasks"] if s is not sub]
-        print(f"removido: {sub['title']}")
-    save_state(path, state)
+    with store.locked_state() as state:
+        if args.sub_command == "add":
+            task = find_task(state, args.id)
+            title = " ".join(args.text).strip()
+            if not title:
+                fail("o subpasso precisa de um título")
+            sub = {"id": next_sub_id(task), "title": title, "done": False}
+            task.setdefault("subtasks", []).append(sub)
+            message = f"{sub['id']}  {sub['title']}"
+        else:
+            task, sub = find_sub(state, args.id)
+            if args.sub_command == "done":
+                sub["done"] = True
+                message = f"feito: {sub['title']}"
+            elif args.sub_command == "undo":
+                sub["done"] = False
+                message = f"reaberto: {sub['title']}"
+            else:
+                task["subtasks"] = [s for s in task["subtasks"] if s is not sub]
+                message = f"removido: {sub['title']}"
+    print(message)
 
 
 SECTION_TITLES = [("overdue", "Atrasadas"), ("today", "Hoje"), ("soon", "Em breve"), ("nodate", "Sem data"), ("done", "Concluídas")]
@@ -531,7 +422,7 @@ def classify(task: dict, today: date) -> str:
 
 
 def cmd_list(args) -> None:
-    state = load_state(state_path())
+    state = store.read_state()
     if args.json:
         print(json.dumps(state, ensure_ascii=False, indent=2))
         return
@@ -557,52 +448,131 @@ def cmd_list(args) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Eventos locais (até o Google Calendar entrar na fase 2)
+# Eventos: no Google quando configurado, locais quando não
 # ---------------------------------------------------------------------------
 
 
+def local_event(state: dict, parsed: dict, day: date) -> dict:
+    event = {
+        "id": "l:" + new_id(state),
+        "calendar": "local",
+        "calendarId": "",
+        "color": "",
+        "title": parsed["title"],
+        "location": "",
+        "url": "",
+        "description": "",
+    }
+    body = google.event_body(parsed["title"], day, parsed["time"], parsed["endTime"], store.now_local().tzinfo, DEFAULT_EVENT_MINUTES)
+    if "dateTime" in body["start"]:
+        event.update({"allDay": False, "start": body["start"]["dateTime"], "end": body["end"]["dateTime"]})
+    else:
+        event.update({"allDay": True, "start": body["start"]["date"], "end": body["end"]["date"]})
+    return event
+
+
 def cmd_event(args) -> None:
-    path = state_path()
-    state = load_state(path)
     if args.event_command == "add":
         parsed = parse_text(" ".join(args.text))
         if parsed["title"] == "":
             fail("o evento precisa de um título")
         day = parsed["due"] or date.today()
-        event = {
-            "id": "l:" + new_id(state),
-            "calendar": "local",
-            "color": "",
-            "title": parsed["title"],
-            "location": "",
-            "url": "",
-            "description": "",
-        }
-        if parsed["time"]:
-            tz = now_local().tzinfo
-            start = datetime.combine(day, datetime.strptime(parsed["time"], "%H:%M").time(), tzinfo=tz)
-            if parsed["endTime"]:
-                end = datetime.combine(day, datetime.strptime(parsed["endTime"], "%H:%M").time(), tzinfo=tz)
-                if end <= start:
-                    end += timedelta(days=1)
-            else:
-                end = start + timedelta(minutes=DEFAULT_EVENT_MINUTES)
-            event.update({"allDay": False, "start": iso(start), "end": iso(end)})
+        if google.is_configured() and not args.local:
+            config = google.load_config()
+            calendar_id = config["google"]["write_calendar"]
+            api = google.connect()
+            body = google.event_body(parsed["title"], day, parsed["time"], parsed["endTime"], store.now_local().tzinfo, DEFAULT_EVENT_MINUTES)
+            created = api.insert_event(calendar_id, body)
+            meta = next((c for c in api.calendar_list() if c.get("id") == calendar_id or (calendar_id == "primary" and c.get("primary"))), {})
+            meta = dict(meta, id=calendar_id)
+            event = google.map_event(created, meta)
+            if event is None:
+                fail("o Google criou o evento mas devolveu algo que não entendi")
+            with store.locked_state() as state:
+                state["events"] = [e for e in state["events"] if e.get("id") != event["id"]] + [event]
+            print(f"{event['id']}  {event['title']}  {event['start']}  (Google: {event['calendar']})")
         else:
-            event.update({"allDay": True, "start": day.isoformat(), "end": (day + timedelta(days=1)).isoformat()})
-        state["events"].append(event)
-        save_state(path, state)
-        print(f"{event['id']}  {event['title']}  {event['start']}")
+            with store.locked_state() as state:
+                event = local_event(state, parsed, day)
+                state["events"].append(event)
+            print(f"{event['id']}  {event['title']}  {event['start']}  (local)")
     elif args.event_command == "rm":
-        before = len(state["events"])
-        state["events"] = [e for e in state["events"] if e.get("id") != args.id]
-        if len(state["events"]) == before:
-            fail(f"evento '{args.id}' não existe")
-        save_state(path, state)
-        print("evento removido")
+        with store.locked_state() as state:
+            event = next((e for e in state["events"] if e.get("id") == args.id), None)
+            if event is None:
+                fail(f"evento '{args.id}' não existe")
+            if args.id.startswith("g:"):
+                google.connect().delete_event(event.get("calendarId") or "primary", args.id[2:])
+            state["events"] = [e for e in state["events"] if e is not event]
+        print(f"evento removido: {event['title']}")
     else:
+        state = store.read_state()
         for event in sorted(state["events"], key=lambda e: e.get("start", "")):
-            print(f"  {event.get('id')}  {event.get('start')}  {event.get('title')}")
+            print(f"  {event.get('id')}  {event.get('start')}  {event.get('title')}  [{event.get('calendar', '')}]")
+
+
+# ---------------------------------------------------------------------------
+# Google Calendar
+# ---------------------------------------------------------------------------
+
+
+def cmd_sync(args) -> None:
+    if not google.is_configured():
+        print("Google não configurado: rode `agenda google setup <client_secret.json>`. Veja docs/google-setup.md.")
+        return
+    count = google.sync_into_state(google.connect(), google.load_config())
+    print(f"sync ok: {count} eventos do Google")
+
+
+def cmd_google(args) -> None:
+    if args.google_command == "setup":
+        target = google.install_client_secret(args.client_secret)
+        config = google.ensure_config_file()
+        print(f"credenciais em {target}\nconfiguração em {config}")
+        token = google.authorize(google.load_client(), open_browser=not args.no_browser)
+        where = google.TokenStore().save(token)
+        print(f"autorizado; token guardado no {where}")
+        cmd_sync(args)
+    elif args.google_command == "auth":
+        token = google.authorize(google.load_client(), open_browser=not args.no_browser)
+        where = google.TokenStore().save(token)
+        print(f"autorizado; token guardado no {where}")
+    elif args.google_command == "calendars":
+        for cal in google.connect().calendar_list():
+            marker = " (principal)" if cal.get("primary") else ""
+            print(f"  {cal.get('id')}  {cal.get('summary')}{marker}")
+    elif args.google_command == "logout":
+        google.TokenStore().clear()
+        print("token apagado; o acesso continua listado em myaccount.google.com/permissions até você revogar lá")
+    else:
+        configured = google.is_configured()
+        state = store.read_state()
+        print(f"client_secret: {'ok' if os.path.exists(google.client_secret_path()) else 'falta'}")
+        print(f"token: {'ok' if google.TokenStore().load() else 'falta'}")
+        print(f"config: {google.config_path()}")
+        sync = state["sync"]
+        print(f"última sincronização: {sync.get('lastOkAt') or 'nunca'}  estado: {sync.get('status')}  {sync.get('error', '')}".rstrip())
+        print(f"serviço agendad: {daemon.service_status()}")
+        if not configured:
+            print("\nPara configurar: agenda google setup <client_secret.json>")
+
+
+def cmd_daemon(args) -> None:
+    daemon.run(google.load_config(), once=args.once)
+
+
+def cmd_service(args) -> None:
+    if args.service_command == "install":
+        try:
+            path = daemon.install_service(self_path())
+        except RuntimeError as error:
+            fail(str(error))
+        print(f"serviço instalado em {path} e ligado; logs: journalctl --user -u agendad -f")
+    elif args.service_command == "uninstall":
+        daemon.uninstall_service()
+        print("serviço removido")
+    else:
+        print(daemon.service_status())
 
 
 # ---------------------------------------------------------------------------
@@ -618,13 +588,11 @@ def cmd_parse(args) -> None:
 
 def cmd_seed(args) -> None:
     """Dados de exemplo relativos a hoje, para ver o painel cheio sem esforço."""
-    path = state_path()
-    state = empty_state()
     today = date.today()
-    tz = now_local().tzinfo
+    tz = store.now_local().tzinfo
 
     def at(day: date, hhmm: str) -> str:
-        return iso(datetime.combine(day, datetime.strptime(hhmm, "%H:%M").time(), tzinfo=tz))
+        return store.iso(datetime.combine(day, datetime.strptime(hhmm, "%H:%M").time(), tzinfo=tz))
 
     samples = [
         ("Pagar conta de luz", today - timedelta(days=1), None, 0, []),
@@ -633,35 +601,32 @@ def cmd_seed(args) -> None:
         ("Presente pra Ana", today + timedelta(days=3), None, 0, ["Escolher", "Comprar", "Embrulhar"]),
         ("Ler sobre Quickshell", None, None, 0, []),
     ]
-    for title, due, due_time, priority, subs in samples:
-        task = make_task(state, title, due, due_time, priority, subs)
-        state["tasks"].append(task)
-    state["tasks"][2]["subtasks"][0]["done"] = True
-    state["tasks"][2]["subtasks"][1]["done"] = True
-    done = make_task(state, "Configurar o Omarchy", today - timedelta(days=1), None, 0, [])
-    done["completedAt"] = iso(now_local() - timedelta(hours=3))
-    state["tasks"].append(done)
+    with store.locked_state() as state:
+        state.update(store.empty_state())
+        for title, due, due_time, priority, subs in samples:
+            state["tasks"].append(make_task(state, title, due, due_time, priority, subs))
+        state["tasks"][2]["subtasks"][0]["done"] = True
+        state["tasks"][2]["subtasks"][1]["done"] = True
+        done = make_task(state, "Configurar o Omarchy", today - timedelta(days=1), None, 0, [])
+        done["completedAt"] = store.iso(store.now_local() - timedelta(hours=3))
+        state["tasks"].append(done)
 
-    state["events"] = [
-        {"id": "l:ev01", "calendar": "local", "color": "", "title": "Aniversário da Ana", "allDay": True,
-         "start": today.isoformat(), "end": (today + timedelta(days=1)).isoformat(), "location": "", "url": "", "description": ""},
-        {"id": "l:ev02", "calendar": "local", "color": "", "title": "Daily", "allDay": False,
-         "start": at(today, "09:00"), "end": at(today, "09:30"), "location": "", "url": "", "description": ""},
-        {"id": "l:ev03", "calendar": "local", "color": "", "title": "Dentista", "allDay": False,
-         "start": at(today, "15:00"), "end": at(today, "16:00"), "location": "Centro", "url": "", "description": ""},
-        {"id": "l:ev04", "calendar": "local", "color": "", "title": "Call com cliente", "allDay": False,
-         "start": at(today + timedelta(days=1), "14:00"), "end": at(today + timedelta(days=1), "15:00"),
-         "location": "", "url": "https://meet.google.com/", "description": ""},
-        {"id": "l:ev05", "calendar": "local", "color": "", "title": "Jantar", "allDay": False,
-         "start": at(today + timedelta(days=3), "19:30"), "end": at(today + timedelta(days=3), "22:00"),
-         "location": "", "url": "", "description": ""},
-    ]
-    save_state(path, state)
-    print(f"dados de exemplo gravados em {path}")
+        def ev(num: int, title: str, start: str, end: str, all_day: bool = False, location: str = "", url: str = "") -> dict:
+            return {"id": f"l:ev0{num}", "calendar": "local", "calendarId": "", "color": "", "title": title, "allDay": all_day,
+                    "start": start, "end": end, "location": location, "url": url, "description": ""}
+
+        state["events"] = [
+            ev(1, "Aniversário da Ana", today.isoformat(), (today + timedelta(days=1)).isoformat(), all_day=True),
+            ev(2, "Daily", at(today, "09:00"), at(today, "09:30")),
+            ev(3, "Dentista", at(today, "15:00"), at(today, "16:00"), location="Centro"),
+            ev(4, "Call com cliente", at(today + timedelta(days=1), "14:00"), at(today + timedelta(days=1), "15:00"), url="https://meet.google.com/"),
+            ev(5, "Jantar", at(today + timedelta(days=3), "19:30"), at(today + timedelta(days=3), "22:00")),
+        ]
+    print(f"dados de exemplo gravados em {store.state_path()}")
 
 
 def cmd_path(args) -> None:
-    print(state_path())
+    print(store.state_path())
 
 
 # ---------------------------------------------------------------------------
@@ -718,14 +683,39 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--all", action="store_true", help="inclui as concluídas")
     p.set_defaults(func=cmd_list)
 
-    p = sub.add_parser("event", help="eventos locais: add <texto> | rm <id> | list")
+    p = sub.add_parser("event", help="eventos: add <texto> [--local] | rm <id> | list")
     ep = p.add_subparsers(dest="event_command", required=True)
     q = ep.add_parser("add")
     q.add_argument("text", nargs="+")
+    q.add_argument("--local", action="store_true", help="não manda para o Google mesmo que ele esteja configurado")
     q = ep.add_parser("rm")
     q.add_argument("id")
     ep.add_parser("list")
     p.set_defaults(func=cmd_event)
+
+    sub.add_parser("sync", help="busca os eventos do Google Calendar agora").set_defaults(func=cmd_sync)
+
+    p = sub.add_parser("google", help="Google Calendar: setup <client_secret.json> | auth | status | calendars | logout")
+    gp = p.add_subparsers(dest="google_command", required=True)
+    q = gp.add_parser("setup")
+    q.add_argument("client_secret")
+    q.add_argument("--no-browser", action="store_true")
+    q = gp.add_parser("auth")
+    q.add_argument("--no-browser", action="store_true")
+    gp.add_parser("status")
+    gp.add_parser("calendars")
+    gp.add_parser("logout")
+    p.set_defaults(func=cmd_google)
+
+    p = sub.add_parser("daemon", help="roda o agendad em primeiro plano")
+    p.add_argument("--once", action="store_true", help="uma volta do laço e sai")
+    p.set_defaults(func=cmd_daemon)
+
+    p = sub.add_parser("service", help="serviço do systemd: install | uninstall | status")
+    svc = p.add_subparsers(dest="service_command", required=True)
+    for name in ("install", "uninstall", "status"):
+        svc.add_parser(name)
+    p.set_defaults(func=cmd_service)
 
     p = sub.add_parser("parse", help="mostra como um texto seria interpretado, sem gravar")
     p.add_argument("text", nargs="+")
@@ -738,7 +728,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
-    args.func(args)
+    try:
+        args.func(args)
+    except (google.GoogleError, store.StoreError) as error:
+        fail(str(error))
+    except KeyboardInterrupt:
+        sys.exit(130)
 
 
 if __name__ == "__main__":

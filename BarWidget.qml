@@ -77,7 +77,7 @@ BarWidget {
     onPressed: function(b) {
       if (!root.panel) return
       if (b === Qt.RightButton) root.panel.openForAdd()
-      else if (b === Qt.MiddleButton) root.panel.reload()
+      else if (b === Qt.MiddleButton) root.panel.sync()
       else root.panel.toggle()
     }
   }

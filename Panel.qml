@@ -106,6 +106,10 @@ Panel {
   function applyState(raw) { state = Model.parseState(raw) }
   function reload() { stateFile.reload() }
 
+  // Sincronização pela CLI: ela busca no Google, grava o state.json e a
+  // mudança volta pelo FileView. Sem Google configurado, ela só avisa.
+  function sync() { runCli(["sync"]) }
+
   // ---- Cursor e abas --------------------------------------------------------
   function currentRow() {
     var model = tab === 0 ? taskRows : eventRows
@@ -352,7 +356,7 @@ Panel {
         else if (t === "d") root.startDue()
         else if (t === "p") root.snoozeCurrent()
         else if (t === "c") root.showCompleted = !root.showCompleted
-        else if (t === "r") root.reload()
+        else if (t === "r") root.sync()
         else if (t === "1") root.setTab(0)
         else if (t === "2") root.setTab(1)
       }
@@ -518,8 +522,8 @@ Panel {
             hoverEnabled: true
 
             PanelToolTip {
-              visible: statusArea.containsMouse && root.lastError !== ""
-              text: root.lastError
+              visible: statusArea.containsMouse && (root.lastError !== "" || root.state.sync.error !== "")
+              text: root.lastError !== "" ? root.lastError : root.state.sync.error
               fontFamily: root.fontFamily
             }
           }

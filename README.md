@@ -2,7 +2,7 @@
 
 Plugin da barra do [Omarchy 4](https://omarchy.org) com um painel quadrado de duas abas: **Tarefas**, com subpassos, e **Agenda**, com os próximos dias. Por baixo, uma CLI em Python que é a única dona dos dados; no futuro, um serviço que sincroniza o Google Calendar e uma ponte para criar tarefas por mensagem.
 
-Estado do projeto: **fase 1**, tarefas e eventos locais. Veja `SPEC.md` para o desenho completo e `docs/roadmap.md` para o plano de estudos e as fases.
+Estado do projeto: **fase 2**, tarefas locais e eventos do Google Calendar. Veja `SPEC.md` para o desenho completo e `docs/roadmap.md` para o plano de estudos e as fases.
 
 ## Instalar
 
@@ -67,6 +67,22 @@ O campo do rodapé entende datas em português:
 | dentista qui 15h | na aba Agenda, evento de uma hora |
 | dentista qui 15h-16h30 | evento com fim explícito |
 
+## Google Calendar
+
+A aba Agenda mostra os eventos da sua conta Google depois de uma configuração única, descrita passo a passo em `docs/google-setup.md`. Em resumo:
+
+```bash
+agenda google setup ~/Downloads/client_secret_*.json
+```
+
+```bash
+agenda service install
+```
+
+O primeiro comando autoriza o plugin na sua conta e faz a primeira sincronização. O segundo liga o `agendad`, um serviço `systemd --user` que sincroniza a cada cinco minutos e avisa dez minutos antes de cada evento. Sem o serviço, `r` no painel ou `agenda sync` no terminal sincronizam na hora. Com o Google configurado, `agenda event add` cria o evento direto no calendário; `--local` mantém o evento só na máquina.
+
+Nada de dependência nova: o OAuth 2.0 e a API REST do Calendar são feitos com a biblioteca padrão do Python, em `lib/agenda_google.py`.
+
 ## CLI
 
 ```
@@ -76,13 +92,17 @@ agenda sub add <id> "texto" | sub done <id.n> | sub undo <id.n> | sub rm <id.n>
 agenda edit <id> --title "…" --due "sex" | --no-due
 agenda snooze <id> [dias]
 agenda list [--json] [--all]
-agenda event add "dentista qui 15h" | event rm <id> | event list
+agenda event add "dentista qui 15h" [--local] | event rm <id> | event list
+agenda sync
+agenda google setup <client_secret.json> | auth | status | calendars | logout
+agenda service install | uninstall | status
+agenda daemon [--once]
 agenda parse "texto"
 agenda seed
 agenda path
 ```
 
-Os dados ficam em `~/.local/state/agenda/state.json`. O painel observa esse arquivo e atualiza sozinho; qualquer coisa que escreva nele pela CLI aparece na hora.
+Os dados ficam em `~/.local/state/agenda/state.json`; a configuração do Google em `~/.config/agenda/`. O painel observa o arquivo de estado e atualiza sozinho; qualquer coisa que a CLI ou o serviço escrevam nele aparece na hora.
 
 ## Desenvolver
 

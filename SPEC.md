@@ -31,12 +31,18 @@ TasksView.qml      aba Tarefas
 AgendaView.qml     aba Agenda
 Model.js           lógica pura: seções, ordenação, rótulos, linhas dos modelos
 bin/agenda         CLI em Python, só biblioteca padrão
-tests/             node --test para Model.js e contrato QML; pytest para a CLI
+lib/agenda_store.py    state.json: caminhos, escrita atômica, trava, notificações
+lib/agenda_google.py   config.toml, OAuth 2.0, API REST do Calendar, sincronização
+lib/agenda_daemon.py   agendad: laço de sync, lembretes, resumo, unidade do systemd
+tests/             node --test para Model.js e contrato QML; pytest para CLI, Google e daemon
+docs/google-setup.md   passo a passo da conta Google
 examples/          state.json de exemplo
 docs/roadmap.md    plano de estudos e fases
 ```
 
-Dados em `~/.local/state/agenda/state.json`. Respeita `XDG_STATE_HOME`; a variável `AGENDA_STATE` troca o caminho, para testes.
+Dados em `~/.local/state/agenda/state.json`. Respeita `XDG_STATE_HOME`; a variável `AGENDA_STATE` troca o caminho, para testes. Configuração em `~/.config/agenda/`: `config.toml` sem segredos, `client_secret.json` e `token.json` com permissão 0600, todos fora do git. `AGENDA_CONFIG_DIR` troca a pasta nos testes.
+
+Dois processos escrevem no `state.json`, a CLI e o daemon, então toda escrita pega um `flock` em `state.json.lock`, lê, altera e grava num temporário trocado com `os.replace`.
 
 ## Widget na barra
 
@@ -172,7 +178,7 @@ O que sobra é o título.
       "subtasks": [ { "id": "7k2a.1", "title": "Rascunho", "done": true } ] }
   ],
   "events": [
-    { "id": "l:9fq1", "calendar": "local", "color": "", "title": "Dentista", "allDay": false,
+    { "id": "g:abc123", "calendar": "Pessoal", "calendarId": "primary", "color": "#8be9fd", "title": "Dentista", "allDay": false,
       "start": "2026-11-03T15:00:00-03:00", "end": "2026-11-03T16:00:00-03:00",
       "location": "Centro", "url": "", "description": "" }
   ],
@@ -182,7 +188,7 @@ O que sobra é o título.
 
 - Ids de tarefa: quatro caracteres base36 começando por letra, curtos para digitar numa mensagem. Subpassos: `<id>.<n>`.
 - Prazos: `due` é "YYYY-MM-DD" no fuso local; `dueTime` é "HH:MM" ou vazio.
-- Eventos com hora em ISO 8601 com fuso; eventos de dia todo só com a data e fim exclusivo.
+- Eventos com hora em ISO 8601 com fuso; eventos de dia todo só com a data e fim exclusivo. Ids `g:` vêm do Google e guardam `calendarId` para apagar depois; ids `l:` são locais.
 - Escrita sempre atômica: temporário mais `os.replace`, para o painel nunca ler meio arquivo.
 
 ## CLI
@@ -212,7 +218,7 @@ agenda path
 ## Fases
 
 1. **Tarefas e eventos locais.** Este repositório. Painel, CLI, testes.
-2. **Google Calendar.** Serviço `agendad` como `systemd --user`: sincroniza a cada cinco minutos e após cada escrita, OAuth com token no keyring, leitura primeiro e escrita depois, notificação dez minutos antes de cada evento, resumo opcional de manhã. O status chega pelo campo `sync` do `state.json`.
+2. **Google Calendar.** Feita. Só biblioteca padrão: OAuth 2.0 de app instalado com PKCE e redirecionamento para um servidor HTTP local de uma requisição só; token no keyring via `secret-tool` ou em arquivo 0600; API REST v3 com `singleEvents` para expandir recorrências e paginação. A sincronização lista os calendários de `config.toml` numa janela de um dia para trás e catorze para frente, troca os eventos `g:` do `state.json` e preserva os `l:`; em erro mantém os eventos antigos e grava `sync.status = "error"`. `agenda event add` cria no `write_calendar` quando o Google está configurado. O `agendad` roda como `systemd --user`: sincroniza a cada `sync_minutes`, avisa `minutes_before` minutos antes de cada evento com hora, lembra o que já avisou em `notified.json`, e manda o resumo em `morning_summary` uma vez por dia.
 3. **Ponte de mensagens.** Telegram primeiro, por não precisar de URL pública; WhatsApp Cloud API com número dedicado depois. Interpretação por modelo de linguagem com três ferramentas: criar tarefa, criar evento, listar. O bot confirma antes de gravar.
 4. **Publicação** em plugins.omarchy.org e dotfiles.
 

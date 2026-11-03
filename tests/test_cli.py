@@ -31,6 +31,8 @@ TODAY = date(2026, 11, 3)  # terça-feira
 def env(tmp_path, monkeypatch):
     state = tmp_path / "state.json"
     monkeypatch.setenv("AGENDA_STATE", str(state))
+    monkeypatch.setenv("AGENDA_CONFIG_DIR", str(tmp_path / "config"))  # sem Google configurado
+    monkeypatch.setenv("AGENDA_NO_KEYRING", "1")
     monkeypatch.setenv("AGENDA_NO_NOTIFY", "1")
     return state
 
