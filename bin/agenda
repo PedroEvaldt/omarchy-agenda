@@ -534,6 +534,7 @@ def cmd_google(args) -> None:
         print(f"autorizado; token guardado no {where}")
         cmd_sync(args)
     elif args.google_command == "auth":
+        google.ensure_config_file()
         token = google.authorize(google.load_client(), open_browser=not args.no_browser)
         where = google.TokenStore().save(token)
         print(f"autorizado; token guardado no {where}")

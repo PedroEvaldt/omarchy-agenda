@@ -8,6 +8,16 @@ O Google não deixa um programa ler o seu calendário só com a sua senha. O cam
 
 Como o app é seu, criado na sua conta, nenhum terceiro vê seus dados.
 
+## 0. O comando `agenda`
+
+A CLI mora dentro da pasta do plugin e não entra no PATH sozinha. O Omarchy já inclui `~/.local/bin` no PATH, então um link basta:
+
+```bash
+ln -s ~/.config/omarchy/plugins/pedro.agenda/bin/agenda ~/.local/bin/agenda
+```
+
+Abra um terminal novo depois. Os comandos abaixo assumem esse link; sem ele, use o caminho completo.
+
 ## 1. Criar o projeto e ligar a API
 
 1. Abra https://console.cloud.google.com e entre com a conta do calendário.
@@ -20,7 +30,7 @@ Como o app é seu, criado na sua conta, nenhum terceiro vê seus dados.
 2. Tipo de usuário **Externo**. Preencha nome do app, e-mail de suporte e e-mail do desenvolvedor. O resto pode ficar vazio.
 3. Em **Público** (ou "Usuários de teste"), adicione o seu próprio e-mail.
 
-Importante: enquanto o app está em **Teste**, o Google invalida o refresh token a cada sete dias e você teria de autorizar de novo toda semana. Para evitar isso, na mesma tela clique em **Publicar o app**. Ele passa para "Em produção" sem precisar de verificação; na tela de autorização vai aparecer um aviso de "app não verificado", e você clica em **Avançado › Acessar**. É normal para apps de uso pessoal.
+Importante: enquanto o app está em **Teste**, o Google invalida o refresh token a cada sete dias e você teria de autorizar de novo toda semana. Para evitar isso, na mesma tela clique em **Publicar o app**. Ele passa para "Em produção" sem precisar de verificação; na tela de autorização vai aparecer um aviso de "app não verificado", e você clica em **Avançado › Acessar**. É normal para apps de uso pessoal. Se você já tinha autorizado antes de publicar, rode `agenda google auth` uma vez para trocar o token de sete dias por um sem prazo.
 
 ## 3. Credenciais do tipo "App para computador"
 

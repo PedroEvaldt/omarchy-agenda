@@ -200,3 +200,6 @@ def test_load_client_exige_arquivo_valido(env):
     assert stat.S_IMODE(os.stat(target).st_mode) == 0o600
     assert google.load_client() == {"client_id": "abc", "client_secret": "xyz"}
     assert google.is_configured() is False  # ainda sem token
+    # Rodar o setup apontando para o arquivo já instalado não pode falhar.
+    assert google.install_client_secret(target) == target
+    assert google.load_client() == {"client_id": "abc", "client_secret": "xyz"}

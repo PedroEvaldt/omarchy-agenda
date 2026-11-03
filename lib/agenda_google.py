@@ -135,11 +135,16 @@ def load_client() -> dict:
 
 
 def install_client_secret(source: str) -> str:
+    """Copia o JSON baixado para ~/.config/agenda/client_secret.json com permissão 0600.
+
+    Se o arquivo já está lá, com esse nome ou outro, só valida e ajusta a permissão.
+    """
     with open(source, encoding="utf-8") as handle:
         json.load(handle)  # valida antes de copiar
     target = client_secret_path()
     os.makedirs(os.path.dirname(target), exist_ok=True)
-    shutil.copyfile(source, target)
+    if not (os.path.exists(target) and os.path.samefile(source, target)):
+        shutil.copyfile(source, target)
     os.chmod(target, 0o600)
     return target
 
