@@ -18,6 +18,7 @@ Uso rápido:
     agenda google setup ~/Downloads/client_secret_xxx.json
     agenda sync
     agenda service install
+    agenda telegram setup <token-do-botfather>
     agenda seed          # grava dados de exemplo
     agenda parse "texto" # mostra como o texto seria interpretado
 """
@@ -27,22 +28,22 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
-import secrets
 import sys
-import unicodedata
 from datetime import date, datetime, timedelta
 
 # Os módulos de apoio moram em ../lib, ao lado deste executável.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
 
+import agenda_bridge as bridge  # noqa: E402
 import agenda_daemon as daemon  # noqa: E402
 import agenda_google as google  # noqa: E402
+import agenda_ops as ops  # noqa: E402
 import agenda_store as store  # noqa: E402
+import agenda_telegram as telegram  # noqa: E402
 
-ID_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz"
-ID_LENGTH = 4
-DEFAULT_EVENT_MINUTES = 60
+# A interpretação de texto mora em agenda_ops; fica visível aqui para quem
+# importa este arquivo (os testes, por exemplo).
+parse_text = ops.parse_text
 
 
 def fail(message: str) -> None:
@@ -55,370 +56,54 @@ def self_path() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Identificadores
-# ---------------------------------------------------------------------------
-
-
-def existing_ids(state: dict) -> set[str]:
-    ids = set()
-    for bucket in ("tasks", "trash"):
-        for task in state[bucket]:
-            ids.add(task.get("id", ""))
-    for event in state["events"]:
-        ids.add(event.get("id", ""))
-    return ids
-
-
-def new_id(state: dict) -> str:
-    """Quatro caracteres base36 começando por letra: curto para digitar numa mensagem."""
-    taken = existing_ids(state)
-    while True:
-        candidate = "".join(secrets.choice(ID_ALPHABET) for _ in range(ID_LENGTH))
-        if candidate not in taken and candidate[0].isalpha():
-            return candidate
-
-
-def find_task(state: dict, task_id: str) -> dict:
-    for task in state["tasks"]:
-        if task.get("id") == task_id:
-            return task
-    fail(f"tarefa '{task_id}' não existe")
-
-
-def find_sub(state: dict, sub_id: str) -> tuple[dict, dict]:
-    task_id, _, _ = sub_id.partition(".")
-    task = find_task(state, task_id)
-    for sub in task.get("subtasks", []):
-        if sub.get("id") == sub_id:
-            return task, sub
-    fail(f"subpasso '{sub_id}' não existe")
-
-
-def next_sub_id(task: dict) -> str:
-    used = {sub.get("id", "") for sub in task.get("subtasks", [])}
-    n = 1
-    while f"{task['id']}.{n}" in used:
-        n += 1
-    return f"{task['id']}.{n}"
-
-
-# ---------------------------------------------------------------------------
-# Interpretação de texto em português
-# ---------------------------------------------------------------------------
-
-# Python conta a semana a partir da segunda (0) até o domingo (6).
-WEEKDAYS = {
-    "segunda": 0, "seg": 0, "segunda-feira": 0,
-    "terca": 1, "ter": 1, "terca-feira": 1,
-    "quarta": 2, "qua": 2, "quarta-feira": 2,
-    "quinta": 3, "qui": 3, "quinta-feira": 3,
-    "sexta": 4, "sex": 4, "sexta-feira": 4,
-    "sabado": 5, "sab": 5,
-    "domingo": 6, "dom": 6,
-}
-CONNECTORS_BEFORE_DAY = {"na", "no", "nesta", "neste", "nessa", "nesse", "proxima", "proximo", "em"}
-CONNECTORS_BEFORE_TIME = {"as", "a", "das"}
-
-TIME_RE = re.compile(r"^(\d{1,2})(?:h|:)(\d{2})?$")
-RANGE_RE = re.compile(r"^(\d{1,2})(?:h|:)?(\d{2})?-(\d{1,2})(?:h|:)?(\d{2})?$")
-DATE_RE = re.compile(r"^(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?$")
-
-
-def strip_accents(text: str) -> str:
-    decomposed = unicodedata.normalize("NFD", text)
-    return "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
-
-
-def clean_token(raw: str) -> str:
-    return strip_accents(raw.lower()).strip(",.;")
-
-
-def valid_time(hour: str, minute: str | None) -> str | None:
-    h = int(hour)
-    m = int(minute) if minute else 0
-    if 0 <= h <= 23 and 0 <= m <= 59:
-        return f"{h:02d}:{m:02d}"
-    return None
-
-
-def resolve_day_of_month(day: int, today: date) -> date | None:
-    """'dia 12' é o dia 12 deste mês, ou do próximo se já passou."""
-    for months_ahead in (0, 1):
-        year = today.year + (today.month - 1 + months_ahead) // 12
-        month = (today.month - 1 + months_ahead) % 12 + 1
-        try:
-            candidate = date(year, month, day)
-        except ValueError:
-            continue
-        if candidate >= today:
-            return candidate
-    return None
-
-
-def resolve_slash_date(match: re.Match, today: date) -> date | None:
-    day, month, year = int(match.group(1)), int(match.group(2)), match.group(3)
-    try:
-        if year:
-            y = int(year)
-            if y < 100:
-                y += 2000
-            return date(y, month, day)
-        candidate = date(today.year, month, day)
-        if candidate < today:
-            candidate = date(today.year + 1, month, day)
-        return candidate
-    except ValueError:
-        return None
-
-
-def parse_text(text: str, today: date | None = None) -> dict:
-    """Separa o título das pistas de data e hora.
-
-    "pagar luz amanhã"        -> título "pagar luz", prazo amanhã
-    "dentista qui 15h"        -> título "dentista", quinta, 15:00
-    "dentista qui 15h-16h30"  -> idem, com fim 16:30
-    "relatório sex !"         -> prioridade alta
-    """
-    today = today or date.today()
-    tokens = text.split()
-    result = {"title": "", "due": None, "time": None, "endTime": None, "priority": 0}
-    keep: list[str] = []
-    i = 0
-    while i < len(tokens):
-        raw = tokens[i]
-        tok = clean_token(raw)
-        nxt = clean_token(tokens[i + 1]) if i + 1 < len(tokens) else ""
-
-        if tok == "!":
-            result["priority"] = 1
-            i += 1
-            continue
-        if tok.endswith("!") and len(tok) > 1:
-            result["priority"] = 1
-            tok = tok[:-1]
-            raw = raw.rstrip("!")
-
-        # Conectivos só somem quando o que vem depois é mesmo uma data ou hora.
-        if tok in CONNECTORS_BEFORE_DAY and (nxt in WEEKDAYS or nxt in ("hoje", "amanha") or DATE_RE.match(nxt)):
-            i += 1
-            continue
-        if tok in CONNECTORS_BEFORE_TIME and (TIME_RE.match(nxt) or RANGE_RE.match(nxt)):
-            i += 1
-            continue
-
-        if tok == "hoje":
-            result["due"] = today
-        elif tok == "amanha":
-            result["due"] = today + timedelta(days=1)
-        elif tok == "depois" and nxt == "de" and i + 2 < len(tokens) and clean_token(tokens[i + 2]) == "amanha":
-            result["due"] = today + timedelta(days=2)
-            i += 2
-        elif tok in WEEKDAYS:
-            delta = (WEEKDAYS[tok] - today.weekday()) % 7
-            result["due"] = today + timedelta(days=delta)
-        elif tok == "dia" and nxt.isdigit() and 1 <= int(nxt) <= 31:
-            resolved = resolve_day_of_month(int(nxt), today)
-            if resolved:
-                result["due"] = resolved
-                i += 1
-            else:
-                keep.append(raw)
-        elif DATE_RE.match(tok):
-            resolved = resolve_slash_date(DATE_RE.match(tok), today)
-            if resolved:
-                result["due"] = resolved
-            else:
-                keep.append(raw)
-        elif RANGE_RE.match(tok):
-            m = RANGE_RE.match(tok)
-            start = valid_time(m.group(1), m.group(2))
-            end = valid_time(m.group(3), m.group(4))
-            if start and end:
-                result["time"], result["endTime"] = start, end
-            else:
-                keep.append(raw)
-        elif TIME_RE.match(tok):
-            m = TIME_RE.match(tok)
-            parsed = valid_time(m.group(1), m.group(2))
-            if parsed:
-                result["time"] = parsed
-            else:
-                keep.append(raw)
-        else:
-            keep.append(raw)
-        i += 1
-
-    result["title"] = " ".join(keep).strip(" ,.;")
-    return result
-
-
-def parse_due_option(value: str, today: date) -> date | None:
-    """--due aceita tanto 'YYYY-MM-DD' quanto a mesma linguagem do texto livre."""
-    try:
-        return date.fromisoformat(value)
-    except ValueError:
-        return parse_text(value, today)["due"]
-
-
-# ---------------------------------------------------------------------------
 # Tarefas
 # ---------------------------------------------------------------------------
 
 
-def make_task(state: dict, title: str, due: date | None, due_time: str | None, priority: int, subs: list[str]) -> dict:
-    task = {
-        "id": new_id(state),
-        "title": title,
-        "due": due.isoformat() if due else "",
-        "dueTime": due_time or "",
-        "priority": priority,
-        "createdAt": store.iso(store.now_local()),
-        "completedAt": "",
-        "subtasks": [],
-    }
-    for sub_title in subs:
-        sub_title = sub_title.strip()
-        if sub_title:
-            task["subtasks"].append({"id": next_sub_id(task), "title": sub_title, "done": False})
-    return task
-
-
-def describe_task(task: dict) -> str:
-    bits = [task["id"], task["title"]]
-    if task.get("due"):
-        bits.append(task["due"] + (" " + task["dueTime"] if task.get("dueTime") else ""))
-    if task.get("priority"):
-        bits.append("!")
-    return "  ".join(bits)
-
-
 def cmd_add(args) -> None:
-    parsed = parse_text(" ".join(args.text))
-    if parsed["title"] == "":
-        fail("a tarefa precisa de um título")
-    due = parsed["due"]
-    if args.due:
-        due = parse_due_option(args.due, date.today())
-        if due is None:
-            fail(f"não entendi o prazo '{args.due}'")
-    priority = 1 if args.priority else parsed["priority"]
-    with store.locked_state() as state:
-        task = make_task(state, parsed["title"], due, parsed["time"], priority, args.sub or [])
-        state["tasks"].append(task)
-    print(describe_task(task))
+    task = ops.add_task(" ".join(args.text), due=args.due, subs=args.sub or [], priority=True if args.priority else None)
+    print(ops.describe_task(task))
 
 
 def cmd_done(args) -> None:
-    with store.locked_state() as state:
-        task = find_task(state, args.id)
-        task["completedAt"] = store.iso(store.now_local())
-        for sub in task.get("subtasks", []):
-            sub["done"] = True
-    print(f"concluída: {task['title']}")
+    print(f"concluída: {ops.complete_task(args.id)['title']}")
 
 
 def cmd_undo(args) -> None:
-    with store.locked_state() as state:
-        task = find_task(state, args.id)
-        task["completedAt"] = ""
-    print(f"reaberta: {task['title']}")
+    print(f"reaberta: {ops.reopen_task(args.id)['title']}")
 
 
 def cmd_rm(args) -> None:
-    with store.locked_state() as state:
-        task = find_task(state, args.id)
-        state["tasks"] = [t for t in state["tasks"] if t is not task]
-        task["deletedAt"] = store.iso(store.now_local())
-        state["trash"].append(task)
+    task = ops.delete_task(args.id)
     print(f"excluída: {task['title']} (desfazer: agenda restore {task['id']})")
     store.notify("Tarefa excluída", task["title"], action=("Desfazer", [self_path(), "restore", task["id"]]))
 
 
 def cmd_restore(args) -> None:
-    with store.locked_state() as state:
-        for task in state["trash"]:
-            if task.get("id") == args.id:
-                state["trash"].remove(task)
-                task.pop("deletedAt", None)
-                state["tasks"].append(task)
-                break
-        else:
-            fail(f"'{args.id}' não está na lixeira")
+    task = ops.restore_task(args.id)
     print(f"restaurada: {task['title']}")
     store.notify("Tarefa restaurada", task["title"])
 
 
 def cmd_snooze(args) -> None:
-    with store.locked_state() as state:
-        task = find_task(state, args.id)
-        base = date.fromisoformat(task["due"]) if task.get("due") else date.today()
-        if base < date.today():
-            base = date.today()
-        task["due"] = (base + timedelta(days=args.days)).isoformat()
+    task = ops.snooze_task(args.id, args.days)
     print(f"adiada para {task['due']}: {task['title']}")
 
 
 def cmd_edit(args) -> None:
-    with store.locked_state() as state:
-        task = find_task(state, args.id)
-        if args.title:
-            task["title"] = args.title.strip()
-        if args.no_due:
-            task["due"], task["dueTime"] = "", ""
-        elif args.due:
-            parsed = parse_text(args.due, date.today())
-            due = parsed["due"]
-            if due is None:
-                try:
-                    due = date.fromisoformat(args.due)
-                except ValueError:
-                    fail(f"não entendi o prazo '{args.due}'")
-            task["due"] = due.isoformat()
-            if parsed["time"]:
-                task["dueTime"] = parsed["time"]
-        if args.priority is not None:
-            task["priority"] = 1 if args.priority else 0
-    print(describe_task(task))
+    print(ops.describe_task(ops.edit_task(args.id, title=args.title, due=args.due, no_due=args.no_due, priority=args.priority)))
 
 
 def cmd_sub(args) -> None:
-    with store.locked_state() as state:
-        if args.sub_command == "add":
-            task = find_task(state, args.id)
-            title = " ".join(args.text).strip()
-            if not title:
-                fail("o subpasso precisa de um título")
-            sub = {"id": next_sub_id(task), "title": title, "done": False}
-            task.setdefault("subtasks", []).append(sub)
-            message = f"{sub['id']}  {sub['title']}"
-        else:
-            task, sub = find_sub(state, args.id)
-            if args.sub_command == "done":
-                sub["done"] = True
-                message = f"feito: {sub['title']}"
-            elif args.sub_command == "undo":
-                sub["done"] = False
-                message = f"reaberto: {sub['title']}"
-            else:
-                task["subtasks"] = [s for s in task["subtasks"] if s is not sub]
-                message = f"removido: {sub['title']}"
-    print(message)
-
-
-SECTION_TITLES = [("overdue", "Atrasadas"), ("today", "Hoje"), ("soon", "Em breve"), ("nodate", "Sem data"), ("done", "Concluídas")]
-
-
-def classify(task: dict, today: date) -> str:
-    if task.get("completedAt"):
-        return "done"
-    if not task.get("due"):
-        return "nodate"
-    diff = (date.fromisoformat(task["due"]) - today).days
-    if diff < 0:
-        return "overdue"
-    if diff == 0:
-        return "today"
-    return "soon"
+    if args.sub_command == "add":
+        task, sub = ops.add_subtask(args.id, " ".join(args.text))
+        print(f"{sub['id']}  {sub['title']}")
+    elif args.sub_command == "done":
+        print(f"feito: {ops.set_subtask(args.id, True)[1]['title']}")
+    elif args.sub_command == "undo":
+        print(f"reaberto: {ops.set_subtask(args.id, False)[1]['title']}")
+    else:
+        print(f"removido: {ops.remove_subtask(args.id)[1]['title']}")
 
 
 def cmd_list(args) -> None:
@@ -426,18 +111,11 @@ def cmd_list(args) -> None:
     if args.json:
         print(json.dumps(state, ensure_ascii=False, indent=2))
         return
-    today = date.today()
-    buckets: dict[str, list[dict]] = {key: [] for key, _ in SECTION_TITLES}
-    for task in state["tasks"]:
-        buckets[classify(task, today)].append(task)
     printed = False
-    for key, title in SECTION_TITLES:
-        tasks = buckets[key]
-        if not tasks or (key == "done" and not args.all):
-            continue
+    for title, tasks in ops.sections(state, date.today(), include_done=args.all):
         printed = True
-        print(f"{title}")
-        for task in sorted(tasks, key=lambda t: (t.get("due") or "9999", t.get("dueTime") or "99", -int(t.get("priority") or 0))):
+        print(title)
+        for task in tasks:
             box = "[x]" if task.get("completedAt") else "[ ]"
             due = f"  ({task['due']}{' ' + task['dueTime'] if task.get('dueTime') else ''})" if task.get("due") else ""
             print(f"  {box} {task['id']}  {task['title']}{due}")
@@ -448,66 +126,19 @@ def cmd_list(args) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Eventos: no Google quando configurado, locais quando não
+# Eventos
 # ---------------------------------------------------------------------------
-
-
-def local_event(state: dict, parsed: dict, day: date) -> dict:
-    event = {
-        "id": "l:" + new_id(state),
-        "calendar": "local",
-        "calendarId": "",
-        "color": "",
-        "title": parsed["title"],
-        "location": "",
-        "url": "",
-        "description": "",
-    }
-    body = google.event_body(parsed["title"], day, parsed["time"], parsed["endTime"], store.now_local().tzinfo, DEFAULT_EVENT_MINUTES)
-    if "dateTime" in body["start"]:
-        event.update({"allDay": False, "start": body["start"]["dateTime"], "end": body["end"]["dateTime"]})
-    else:
-        event.update({"allDay": True, "start": body["start"]["date"], "end": body["end"]["date"]})
-    return event
 
 
 def cmd_event(args) -> None:
     if args.event_command == "add":
-        parsed = parse_text(" ".join(args.text))
-        if parsed["title"] == "":
-            fail("o evento precisa de um título")
-        day = parsed["due"] or date.today()
-        if google.is_configured() and not args.local:
-            config = google.load_config()
-            calendar_id = config["google"]["write_calendar"]
-            api = google.connect()
-            body = google.event_body(parsed["title"], day, parsed["time"], parsed["endTime"], store.now_local().tzinfo, DEFAULT_EVENT_MINUTES)
-            created = api.insert_event(calendar_id, body)
-            meta = next((c for c in api.calendar_list() if c.get("id") == calendar_id or (calendar_id == "primary" and c.get("primary"))), {})
-            meta = dict(meta, id=calendar_id)
-            event = google.map_event(created, meta)
-            if event is None:
-                fail("o Google criou o evento mas devolveu algo que não entendi")
-            with store.locked_state() as state:
-                state["events"] = [e for e in state["events"] if e.get("id") != event["id"]] + [event]
-            print(f"{event['id']}  {event['title']}  {event['start']}  (Google: {event['calendar']})")
-        else:
-            with store.locked_state() as state:
-                event = local_event(state, parsed, day)
-                state["events"].append(event)
-            print(f"{event['id']}  {event['title']}  {event['start']}  (local)")
+        event, origin = ops.add_event(" ".join(args.text), local=args.local)
+        where = f"Google: {event['calendar']}" if origin == "google" else "local"
+        print(f"{event['id']}  {event['title']}  {event['start']}  ({where})")
     elif args.event_command == "rm":
-        with store.locked_state() as state:
-            event = next((e for e in state["events"] if e.get("id") == args.id), None)
-            if event is None:
-                fail(f"evento '{args.id}' não existe")
-            if args.id.startswith("g:"):
-                google.connect().delete_event(event.get("calendarId") or "primary", args.id[2:])
-            state["events"] = [e for e in state["events"] if e is not event]
-        print(f"evento removido: {event['title']}")
+        print(f"evento removido: {ops.remove_event(args.id)['title']}")
     else:
-        state = store.read_state()
-        for event in sorted(state["events"], key=lambda e: e.get("start", "")):
+        for event in sorted(store.read_state()["events"], key=lambda e: e.get("start", "")):
             print(f"  {event.get('id')}  {event.get('start')}  {event.get('title')}  [{event.get('calendar', '')}]")
 
 
@@ -572,8 +203,49 @@ def cmd_service(args) -> None:
     elif args.service_command == "uninstall":
         daemon.uninstall_service()
         print("serviço removido")
+    elif args.service_command == "restart":
+        result = daemon.systemctl("restart", daemon.SERVICE_NAME)
+        if result.returncode != 0:
+            fail(f"não reiniciou: {result.stderr.strip()}")
+        print(f"reiniciado: {daemon.service_status()}")
     else:
         print(daemon.service_status())
+
+
+# ---------------------------------------------------------------------------
+# Telegram e a ponte de mensagens
+# ---------------------------------------------------------------------------
+
+
+def cmd_telegram(args) -> None:
+    if args.telegram_command == "setup":
+        chat_id = telegram.pair(args.token)
+        path = telegram.save_credentials(args.token, chat_id)
+        print(f"pareado com o chat {chat_id}; credenciais em {path}")
+        print("reinicie o serviço para ele começar a atender: agenda service restart")
+    elif args.telegram_command == "send":
+        creds = telegram.load_credentials()
+        if not creds or not creds["chat_id"]:
+            fail("Telegram não configurado; rode `agenda telegram setup <token>`")
+        telegram.Bot(creds["token"], creds["chat_id"]).send(bridge.Reply(" ".join(args.text)))
+        print("enviado")
+    elif args.telegram_command == "logout":
+        if os.path.exists(telegram.credentials_path()):
+            os.unlink(telegram.credentials_path())
+        print("credenciais do Telegram apagadas; revogue o token no BotFather se quiser")
+    else:
+        creds = telegram.load_credentials()
+        print(f"token: {'ok' if creds else 'falta'}")
+        print(f"chat pareado: {creds['chat_id'] if creds and creds['chat_id'] else 'não'}")
+        print(f"serviço agendad: {daemon.service_status()}")
+
+
+def cmd_bridge(args) -> None:
+    """Conversa com a ponte no terminal, sem Telegram: útil para testar frases."""
+    reply = bridge.handle_text(" ".join(args.text))
+    print(reply.text)
+    for label, data in reply.buttons:
+        print(f"  [{label}] -> {data}")
 
 
 # ---------------------------------------------------------------------------
@@ -605,10 +277,10 @@ def cmd_seed(args) -> None:
     with store.locked_state() as state:
         state.update(store.empty_state())
         for title, due, due_time, priority, subs in samples:
-            state["tasks"].append(make_task(state, title, due, due_time, priority, subs))
+            state["tasks"].append(ops.make_task(state, title, due, due_time, priority, subs))
         state["tasks"][2]["subtasks"][0]["done"] = True
         state["tasks"][2]["subtasks"][1]["done"] = True
-        done = make_task(state, "Configurar o Omarchy", today - timedelta(days=1), None, 0, [])
+        done = ops.make_task(state, "Configurar o Omarchy", today - timedelta(days=1), None, 0, [])
         done["completedAt"] = store.iso(store.now_local() - timedelta(hours=3))
         state["tasks"].append(done)
 
@@ -712,11 +384,25 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--once", action="store_true", help="uma volta do laço e sai")
     p.set_defaults(func=cmd_daemon)
 
-    p = sub.add_parser("service", help="serviço do systemd: install | uninstall | status")
+    p = sub.add_parser("service", help="serviço do systemd: install | uninstall | restart | status")
     svc = p.add_subparsers(dest="service_command", required=True)
-    for name in ("install", "uninstall", "status"):
+    for name in ("install", "uninstall", "restart", "status"):
         svc.add_parser(name)
     p.set_defaults(func=cmd_service)
+
+    p = sub.add_parser("telegram", help="bot do Telegram: setup <token> | status | send <texto> | logout")
+    tp = p.add_subparsers(dest="telegram_command", required=True)
+    q = tp.add_parser("setup")
+    q.add_argument("token")
+    tp.add_parser("status")
+    q = tp.add_parser("send")
+    q.add_argument("text", nargs="+")
+    tp.add_parser("logout")
+    p.set_defaults(func=cmd_telegram)
+
+    p = sub.add_parser("bridge", help="manda um texto para a ponte de mensagens e mostra a resposta")
+    p.add_argument("text", nargs="+")
+    p.set_defaults(func=cmd_bridge)
 
     p = sub.add_parser("parse", help="mostra como um texto seria interpretado, sem gravar")
     p.add_argument("text", nargs="+")
@@ -731,7 +417,7 @@ def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     try:
         args.func(args)
-    except (google.GoogleError, store.StoreError) as error:
+    except (ops.OpsError, google.GoogleError, store.StoreError, telegram.TelegramError) as error:
         fail(str(error))
     except KeyboardInterrupt:
         sys.exit(130)

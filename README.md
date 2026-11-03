@@ -2,7 +2,7 @@
 
 Plugin da barra do [Omarchy 4](https://omarchy.org) com um painel quadrado de duas abas: **Tarefas**, com subpassos, e **Agenda**, com os próximos dias. Por baixo, uma CLI em Python que é a única dona dos dados; no futuro, um serviço que sincroniza o Google Calendar e uma ponte para criar tarefas por mensagem.
 
-Estado do projeto: **fase 2**, tarefas locais e eventos do Google Calendar. Veja `SPEC.md` para o desenho completo e `docs/roadmap.md` para o plano de estudos e as fases.
+Estado do projeto: **fase 3**, tarefas locais, eventos do Google Calendar e captura por Telegram. Veja `SPEC.md` para o desenho completo e `docs/roadmap.md` para o plano de estudos e as fases.
 
 ## Instalar
 
@@ -83,6 +83,16 @@ O primeiro comando autoriza o plugin na sua conta e faz a primeira sincronizaç�
 
 Nada de dependência nova: o OAuth 2.0 e a API REST do Calendar são feitos com a biblioteca padrão do Python, em `lib/agenda_google.py`.
 
+## Telegram
+
+Mande "pagar luz amanhã" para o seu bot e a tarefa aparece na barra; "dentista qui 15h" vira evento no Google. Cada resposta traz um botão Desfazer. Configuração em cinco minutos, em `docs/telegram-setup.md`:
+
+```bash
+agenda telegram setup <token-do-botfather>
+```
+
+O bot roda dentro do `agendad`, sem URL pública. A gramática e as respostas ficam em `lib/agenda_bridge.py`, que não sabe o que é Telegram: para outro canal, escreve-se só outro tradutor como `lib/agenda_telegram.py`.
+
 ## CLI
 
 ```
@@ -95,7 +105,9 @@ agenda list [--json] [--all]
 agenda event add "dentista qui 15h" [--local] | event rm <id> | event list
 agenda sync
 agenda google setup <client_secret.json> | auth | status | calendars | logout
-agenda service install | uninstall | status
+agenda service install | uninstall | restart | status
+agenda telegram setup <token> | status | send "texto" | logout
+agenda bridge "texto"
 agenda daemon [--once]
 agenda parse "texto"
 agenda seed

@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 
 import agenda_google as google
 import agenda_store as store
+import agenda_telegram as telegram
 
 log = logging.getLogger("agendad")
 
@@ -156,7 +157,12 @@ def run(config: dict, once: bool = False) -> None:
     summary_at = str(config["reminders"]["morning_summary"] or "")
     api = None
     next_sync = 0.0
-    log.info("agendad iniciado: sync a cada %d min, lembrete %d min antes", sync_minutes, minutes_before)
+    bot = None
+    creds = telegram.load_credentials()
+    if creds and creds["chat_id"]:
+        bot = telegram.Bot(creds["token"], creds["chat_id"])
+    log.info("agendad iniciado: sync a cada %d min, lembrete %d min antes, telegram %s",
+             sync_minutes, minutes_before, "ligado" if bot else "desligado")
 
     while True:
         now = store.now_local()
@@ -191,7 +197,16 @@ def run(config: dict, once: bool = False) -> None:
 
         if once:
             return
-        time.sleep(TICK_SECONDS)
+        # Com o Telegram ligado, a espera por mensagens é o próprio sono do laço:
+        # a chamada volta na hora em que algo chega, ou no fim do tempo.
+        if bot:
+            try:
+                bot.serve_once(timeout=TICK_SECONDS - 5)
+            except telegram.TelegramError as error:
+                log.warning("telegram: %s", error)
+                time.sleep(10)
+        else:
+            time.sleep(TICK_SECONDS)
 
 
 # ---------------------------------------------------------------------------

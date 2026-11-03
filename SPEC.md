@@ -30,7 +30,10 @@ Panel.qml          painel: cabeçalho, trilho das abas, rodapé, CLI e FileView
 TasksView.qml      aba Tarefas
 AgendaView.qml     aba Agenda
 Model.js           lógica pura: seções, ordenação, rótulos, linhas dos modelos
-bin/agenda         CLI em Python, só biblioteca padrão
+bin/agenda         CLI em Python, só biblioteca padrão: argparse em cima de agenda_ops
+lib/agenda_ops.py      as operações: parser de texto, tarefas, subpassos, eventos
+lib/agenda_bridge.py   ponte de mensagens sem canal: texto entra, resposta e botões saem
+lib/agenda_telegram.py canal Telegram: long polling, botões inline, pareamento
 lib/agenda_store.py    state.json: caminhos, escrita atômica, trava, notificações
 lib/agenda_google.py   config.toml, OAuth 2.0, API REST do Calendar, sincronização
 lib/agenda_daemon.py   agendad: laço de sync, lembretes, resumo, unidade do systemd
@@ -219,7 +222,7 @@ agenda path
 
 1. **Tarefas e eventos locais.** Este repositório. Painel, CLI, testes.
 2. **Google Calendar.** Feita. Só biblioteca padrão: OAuth 2.0 de app instalado com PKCE e redirecionamento para um servidor HTTP local de uma requisição só; token no keyring via `secret-tool` ou em arquivo 0600; API REST v3 com `singleEvents` para expandir recorrências e paginação. A sincronização lista os calendários de `config.toml` numa janela de um dia para trás e catorze para frente, troca os eventos `g:` do `state.json` e preserva os `l:`; em erro mantém os eventos antigos e grava `sync.status = "error"`. `agenda event add` cria no `write_calendar` quando o Google está configurado. O `agendad` roda como `systemd --user`: sincroniza a cada `sync_minutes`, avisa `minutes_before` minutos antes de cada evento com hora, lembra o que já avisou em `notified.json`, e manda o resumo em `morning_summary` uma vez por dia.
-3. **Ponte de mensagens.** Telegram primeiro, por não precisar de URL pública; WhatsApp Cloud API com número dedicado depois. Interpretação por modelo de linguagem com três ferramentas: criar tarefa, criar evento, listar. O bot confirma antes de gravar.
+3. **Ponte de mensagens.** Feita, com Telegram. Decisões: as mesmas regras de interpretação da CLI, sem modelo de linguagem; criação direta com botão Desfazer na resposta, em vez de pedir confirmação; `t:` e `e:` forçam o tipo, e sem prefixo a hora decide. O bot roda dentro do `agendad` por long polling, sem URL pública, e só atende o chat pareado em `telegram.json`. `agenda_bridge.py` é a parte sem canal; trocar para WhatsApp é escrever outro tradutor como `agenda_telegram.py`. Um modelo de linguagem continua possível como opção futura, na frente das mesmas regras.
 4. **Publicação** em plugins.omarchy.org e dotfiles.
 
 ## Decisões tomadas
